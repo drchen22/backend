@@ -1,4 +1,5 @@
 #include "database.h"
+#include "threadpool.h"
 
 static std::string conn_str = "user=chen password=JC2003@! hostaddr=110.42.163.188 port=5432 dbname=backend";
 
@@ -14,6 +15,9 @@ void init_system() {
 
 
 int start_webserver(pqxx::work& worker) {
+
+    noia::thread_pool pool{};
+
   int socketFd = socket(AF_INET, SOCK_STREAM, 0);
   struct sockaddr_in address;
   address.sin_family = AF_INET;
@@ -47,7 +51,10 @@ int start_webserver(pqxx::work& worker) {
 
 
     // 处理API
+
+
     handle_request(request_path, worker, clientSocket);
+
     
 
     close(clientSocket);
@@ -65,7 +72,7 @@ void handle_request(std::string path, pqxx::work& worker, int clientSocket) {
                      {"price", data[i][3].c_str()},
                      {"image_link", data[i][4].c_str()},
                     };
-        std::cout << data[i][4].c_str() << std::endl;
+        // std::cout << data[i][4].c_str() << std::endl;
       }
 
       std::string result_str = result.dump();
@@ -80,4 +87,5 @@ void handle_request(std::string path, pqxx::work& worker, int clientSocket) {
   }
     std::string response = "HTTP/1.1 api\r\n\r\n Welcome!";
     send(clientSocket, response.c_str(), response.size(), 0);
+    return;
 }

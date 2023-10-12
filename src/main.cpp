@@ -1,33 +1,23 @@
 #include <iostream>
 
+#include "connection.h"
 #include "database.h"
 #include "db.h"
 #include "threadpool.h"
+int multiply(int a, int b, int c) { return a * b + c; }
 
-int test_thread() {
-  ThreadPool pool(4);
-  std::vector<std::future<int>> results;
+// int test_thread() {
+//     noia::thread_pool pool{};
+//     auto result1 = pool.enqueue(multiply, 3, 4);
+//     auto result2 = pool.enqueue(multiply, 5, 6);
+//     auto result3 = pool.enqueue(multiply, 7, 8);
+//     std::cout << result1.get() << std::endl;
+//     std::cout << result2.get() << std::endl;
+//     std::cout << result3.get() << std::endl;
+// }
 
-  for (int i = 0; i < 8; ++i) {
-    results.emplace_back(pool.enqueue([i] {
-      std::cout << "hello " << i << std::endl;
-      std::this_thread::sleep_for(std::chrono::seconds(1));
-      std::cout << "world " << i << std::endl;
-      return i * i;
-    }));
-  }
+int main() { std::cout << "In Main Function" << std::endl; 
+    init_system();
 
-  for (auto &&result : results)
-    std::cout << result.get() << ' ';
-  std::cout << std::endl;
-
-  getchar();
-  return 0;
-}
-
-int main() {
-  std::cout << "In Main Function" << std::endl;
-
-  // init_system();
-  test_thread();
+    // test_thread();
 }
