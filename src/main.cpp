@@ -1,6 +1,5 @@
 #include <iostream>
 
-#include "connection.h"
 #include "database.h"
 #include "db.h"
 #include "threadpool.h"
