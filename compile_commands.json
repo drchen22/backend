@@ -1,0 +1,21 @@
+[
+{
+  "directory": "/home/chen/workspace/cpp/backend",
+  "arguments": ["/usr/lib/llvm-20/bin/clang", "-c", "-Qunused-arguments", "-m64", "-std=c++23", "-stdlib=libc++", "-cxx-isystem/usr/lib/llvm-20/include/c++/v1", "-Ibuild/.gens/main/linux/x86_64/release/platform/windows/idl", "-Iserver/include", "-Ibuild/.gens/backend/linux/x86_64/release/platform/windows/idl", "-o", "build/.objs/main/linux/x86_64/release/main.cpp.o", "main.cpp"],
+  "file": "main.cpp"
+},
+{
+  "directory": "/home/chen/workspace/cpp/backend",
+  "arguments": ["/usr/lib/llvm-20/bin/clang", "-c", "-Qunused-arguments", "-m64", "-std=c++23", "-stdlib=libc++", "-cxx-isystem/usr/lib/llvm-20/include/c++/v1", "-Iserver/include", "-Ibuild/.gens/backend/linux/x86_64/release/platform/windows/idl", "-I", "/home/chen/.xmake/packages/l/liburing/2.12/0da0a2c003c246779e0bc2ed12203d3e/include", "-o", "build/.objs/backend/linux/x86_64/release/server/source/async/async.cpp.o", "server/source/async/async.cpp"],
+  "file": "server/source/async/async.cpp"
+},
+{
+  "directory": "/home/chen/workspace/cpp/backend",
+  "arguments": ["/usr/lib/llvm-20/bin/clang", "-c", "-Qunused-arguments", "-m64", "-std=c++23", "-stdlib=libc++", "-cxx-isystem/usr/lib/llvm-20/include/c++/v1", "-Ibuild/.gens/tests/linux/x86_64/release/platform/windows/idl", "-Iserver/include", "-Ibuild/.gens/backend/linux/x86_64/release/platform/windows/idl", "-I", "/home/chen/.xmake/packages/c/catch2/v3.11.0/71f429c45a0443d9ba1319fd7ed67d2f/include", "-o", "build/.objs/tests/linux/x86_64/release/tests/test_example.cpp.o", "tests/test_example.cpp"],
+  "file": "tests/test_example.cpp"
+},
+{
+  "directory": "/home/chen/workspace/cpp/backend",
+  "arguments": ["/usr/lib/llvm-20/bin/clang", "-c", "-Qunused-arguments", "-m64", "-std=c++23", "-stdlib=libc++", "-cxx-isystem/usr/lib/llvm-20/include/c++/v1", "-Ibuild/.gens/tests/linux/x86_64/release/platform/windows/idl", "-Iserver/include", "-Ibuild/.gens/backend/linux/x86_64/release/platform/windows/idl", "-I", "/home/chen/.xmake/packages/c/catch2/v3.11.0/71f429c45a0443d9ba1319fd7ed67d2f/include", "-o", "build/.objs/tests/linux/x86_64/release/tests/async/test_when_any.cpp.o", "tests/async/test_when_any.cpp"],
+  "file": "tests/async/test_when_any.cpp"
+}]

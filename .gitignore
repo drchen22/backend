@@ -1,0 +1,5 @@
+.trae/
+.vscode/
+.xmake/
+.zed/
+build/
