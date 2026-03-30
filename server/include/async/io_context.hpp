@@ -1,5 +1,6 @@
 #pragma once
 #include "async/task.hpp"
+#include <condition_variable>
 #include <coroutine>
 #include <deque>
 #include <mutex>

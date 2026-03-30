@@ -2,4 +2,8 @@
 .vscode/
 .xmake/
 .zed/
+.cache/
 build/
+.clangd
+compile_commands.json
+AGENTS.md
