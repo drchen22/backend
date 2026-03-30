@@ -1,17 +1,17 @@
 add_rules("mode.releasedbg")
 add_rules("plugin.compile_commands.autoupdate", { outputdir = "./" })
 set_languages("c++23")
-add_requires("catch2")
+add_requires("catch2", "liburing")
 
 target("backend")
 set_kind("static")
 add_files("server/source/**.cpp")
 add_includedirs("server/include", { public = true })
+add_packages("liburing", { public = true })
 
-
-target("main")
+target("http_server")
 set_kind("binary")
-add_files("main.cpp")
+add_files("examples/http_server.cpp")
 add_deps("backend")
 
 target("tests")

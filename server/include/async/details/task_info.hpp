@@ -4,21 +4,30 @@
 #include <cstdint>
 #include <memory>
 
-struct [[nodiscard]] task_info {
+struct task_info {
     std::coroutine_handle<> handel_;
-
     int32_t result;
-
-    [[nodiscard]] uint64_t as_user_data() const noexcept {
-        return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(this));
-    }
 };
 
-inline constexpr uintptr_t raw_task_info_mask =
-    ~uintptr_t(alignof(task_info) - 1);
+inline constexpr uintptr_t io_tag_bit = 1;
 
-static_assert((~raw_task_info_mask) == 0x7 , "task_info must be 8-byte aligned");
+inline uintptr_t encode_post_handle(std::coroutine_handle<> h) noexcept {
+    return reinterpret_cast<uintptr_t>(h.address());
+}
 
-inline task_info* raw_task_info_from_user_data(uintptr_t info) noexcept {
-    return std::assume_aligned<alignof(task_info)>(reinterpret_cast<task_info*>(info & raw_task_info_mask));
+inline uintptr_t encode_io_task_info(task_info *info) noexcept {
+    return reinterpret_cast<uintptr_t>(info) | io_tag_bit;
+}
+
+inline bool is_io_task(uintptr_t data) noexcept {
+    return (data & io_tag_bit) != 0;
+}
+
+inline task_info *decode_io_task_info(uintptr_t data) noexcept {
+    return reinterpret_cast<task_info *>(data & ~uintptr_t(1));
+}
+
+inline std::coroutine_handle<> decode_post_handle(uintptr_t data) noexcept {
+    return std::coroutine_handle<>::from_address(
+        reinterpret_cast<void *>(data));
 }

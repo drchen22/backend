@@ -1,11 +1,13 @@
 #pragma once
 #include "async/task.hpp"
-#include <condition_variable>
+#include "async/details/task_info.hpp"
 #include <coroutine>
-#include <deque>
-#include <mutex>
+#include <cstdint>
+#include <liburing.h>
+#include <print>
 #include <thread>
 #include <utility>
+
 class io_context;
 
 namespace detail {
@@ -14,13 +16,16 @@ inline thread_local io_context *tls_ctx = nullptr;
 
 class io_context {
 public:
-    io_context() = default;
+    explicit io_context(unsigned entries = 256) {
+        io_uring_queue_init(entries, &ring_, 0);
+    }
 
     ~io_context() {
         stop();
         if (worker_.joinable()) {
             worker_.join();
         }
+        io_uring_queue_exit(&ring_);
     }
 
     io_context(const io_context &) = delete;
@@ -38,13 +43,11 @@ public:
 
     void stop() {
         stop_requested_.store(true, std::memory_order_release);
-        cv_.notify_all();
+        submit_wakeup();
     }
 
-    // 只需要 co_spawn(Task<void>)：把协程塞进 context 执行（异常吞掉，保证 work 计数回收）
     void co_spawn(Task<void> t) {
         work_.fetch_add(1, std::memory_order_relaxed);
-
         auto wrapper = runner(std::move(t), this);
         auto h = wrapper.get_handle();
         wrapper.detach();
@@ -54,79 +57,116 @@ public:
     struct yield_awaitable {
         io_context &ctx;
         bool await_ready() noexcept { return false; }
-        void await_suspend(std::coroutine_handle<> h) noexcept { ctx.post(h); }
+        void await_suspend(std::coroutine_handle<> h) noexcept {
+            ctx.post(h);
+        }
         void await_resume() noexcept {}
     };
 
     yield_awaitable yield() noexcept { return yield_awaitable{*this}; }
 
+    io_uring *ring() noexcept { return &ring_; }
+
+    void submit_wakeup() {
+        auto *sqe = io_uring_get_sqe(&ring_);
+        if (sqe) {
+            io_uring_prep_nop(sqe);
+            io_uring_sqe_set_data(sqe, nullptr);
+            io_uring_submit(&ring_);
+        }
+    }
+
 private:
     friend io_context *this_io_context() noexcept;
 
     void post(std::coroutine_handle<> h) {
-        {
-            std::lock_guard lk(m_);
-            queue_.push_back(h);
+        auto *sqe = io_uring_get_sqe(&ring_);
+        if (!sqe) {
+            io_uring_submit(&ring_);
+            sqe = io_uring_get_sqe(&ring_);
         }
-        cv_.notify_one();
+        io_uring_prep_nop(sqe);
+        io_uring_sqe_set_data64(
+            sqe, static_cast<uint64_t>(encode_post_handle(h)));
+        io_uring_submit(&ring_);
     }
 
     void work_done() {
-        work_.fetch_sub(1, std::memory_order_relaxed);
-        cv_.notify_all();
+        if (work_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            submit_wakeup();
+        }
     }
 
     void run() {
         detail::tls_ctx = this;
 
-        for (;;) {
-            std::coroutine_handle<> h{};
-            {
-                std::unique_lock lk(m_);
-                cv_.wait(lk, [&] {
-                    return stop_requested_.load(std::memory_order_acquire) || !queue_.empty() ||
-                           work_.load(std::memory_order_acquire) == 0;
-                });
+        while (!stop_requested_.load(std::memory_order_acquire)) {
+            int ret = io_uring_submit_and_wait(&ring_, 1);
+            if (ret < 0) {
+                continue;
+            }
 
-                if (queue_.empty()) {
+            unsigned head;
+            struct io_uring_cqe *cqe;
+            unsigned count = 0;
+
+            io_uring_for_each_cqe(&ring_, head, cqe) {
+                ++count;
+                uint64_t data = static_cast<uint64_t>(
+                    reinterpret_cast<uintptr_t>(
+                        io_uring_cqe_get_data(cqe)));
+
+                if (data == 0) {
                     if (stop_requested_.load(std::memory_order_acquire) ||
                         work_.load(std::memory_order_acquire) == 0) {
-                        break;
+                        io_uring_cq_advance(&ring_, count);
+                        goto done;
                     }
                     continue;
                 }
 
-                h = queue_.front();
-                queue_.pop_front();
+                if (is_io_task(static_cast<uintptr_t>(data))) {
+                    auto *info =
+                        decode_io_task_info(static_cast<uintptr_t>(data));
+                    info->result = cqe->res;
+                    auto h = info->handel_;
+                    if (h && !h.done()) {
+                        h.resume();
+                    }
+                } else {
+                    auto h = decode_post_handle(
+                        static_cast<uintptr_t>(data));
+                    if (h && !h.done()) {
+                        h.resume();
+                    }
+                }
             }
 
-            if (h && !h.done()) {
-                h.resume();
+            if (count > 0) {
+                io_uring_cq_advance(&ring_, count);
             }
         }
 
+    done:
         detail::tls_ctx = nullptr;
     }
 
     static Task<void> runner(Task<void> t, io_context *ctx) {
         try {
-            // TODO 为什么会报错
-            // co_await std::move(t);
             co_await t;
         } catch (...) {
-            // 顶层 fire-and-forget：这里选择吞掉异常，避免把 io_context 卡死。
         }
         ctx->work_done();
         co_return;
     }
 
 private:
-    std::mutex m_;
-    std::condition_variable cv_;
-    std::deque<std::coroutine_handle<>> queue_;
+    io_uring ring_;
     std::atomic<bool> stop_requested_{false};
     std::atomic<std::size_t> work_{0};
     std::thread worker_;
 };
 
-inline io_context *this_io_context() noexcept { return detail::tls_ctx; }
+inline io_context *this_io_context() noexcept {
+    return detail::tls_ctx;
+}
