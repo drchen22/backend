@@ -159,7 +159,7 @@ public:
     // 全1
     static inline constexpr uintptr_t is_detached = -1ULL;
 
-    task_promise() noexcept {};
+    task_promise() noexcept : is_detached_flag(0) {}
 
     ~task_promise() noexcept {
         if (is_detached_flag != is_detached) {

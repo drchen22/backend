@@ -1,6 +1,8 @@
 #pragma once
+
 #include "async/task.hpp"
 #include "async/details/task_info.hpp"
+#include "async/details/worker_meta.hpp"
 #include <coroutine>
 #include <cstdint>
 #include <liburing.h>
@@ -16,7 +18,9 @@ inline thread_local io_context *tls_ctx = nullptr;
 
 class io_context {
 public:
-    explicit io_context(unsigned entries = 256) {
+    explicit io_context(
+        unsigned entries = 256, unsigned submit_threshold = 1)
+        : meta_(submit_threshold) {
         io_uring_queue_init(entries, &ring_, 0);
     }
 
@@ -67,12 +71,15 @@ public:
 
     io_uring *ring() noexcept { return &ring_; }
 
+    worker_meta &meta() noexcept { return meta_; }
+
     void submit_wakeup() {
         auto *sqe = io_uring_get_sqe(&ring_);
         if (sqe) {
             io_uring_prep_nop(sqe);
             io_uring_sqe_set_data(sqe, nullptr);
-            io_uring_submit(&ring_);
+            meta_.notify_sqe_ready(&ring_);
+            meta_.flush(&ring_);
         }
     }
 
@@ -82,13 +89,14 @@ private:
     void post(std::coroutine_handle<> h) {
         auto *sqe = io_uring_get_sqe(&ring_);
         if (!sqe) {
-            io_uring_submit(&ring_);
+            meta_.flush(&ring_);
             sqe = io_uring_get_sqe(&ring_);
         }
         io_uring_prep_nop(sqe);
         io_uring_sqe_set_data64(
             sqe, static_cast<uint64_t>(encode_post_handle(h)));
-        io_uring_submit(&ring_);
+        meta_.notify_sqe_ready(&ring_);
+        meta_.flush(&ring_);
     }
 
     void work_done() {
@@ -99,9 +107,10 @@ private:
 
     void run() {
         detail::tls_ctx = this;
+        meta_.reset();
 
         while (!stop_requested_.load(std::memory_order_acquire)) {
-            int ret = io_uring_submit_and_wait(&ring_, 1);
+            int ret = meta_.submit_and_wait(&ring_, 1);
             if (ret < 0) {
                 continue;
             }
@@ -125,10 +134,20 @@ private:
                     continue;
                 }
 
-                if (is_io_task(static_cast<uintptr_t>(data))) {
+                if (is_link_task(static_cast<uintptr_t>(data))) {
+                    auto *info =
+                        decode_link_task_info(static_cast<uintptr_t>(data));
+                    info->result = cqe->res;
+                    meta_.notify_io_completed();
+                    auto h = info->handel_;
+                    if (h && !h.done()) {
+                        h.resume();
+                    }
+                } else if (is_io_task(static_cast<uintptr_t>(data))) {
                     auto *info =
                         decode_io_task_info(static_cast<uintptr_t>(data));
                     info->result = cqe->res;
+                    meta_.notify_io_completed();
                     auto h = info->handel_;
                     if (h && !h.done()) {
                         h.resume();
@@ -162,6 +181,7 @@ private:
 
 private:
     io_uring ring_;
+    worker_meta meta_;
     std::atomic<bool> stop_requested_{false};
     std::atomic<std::size_t> work_{0};
     std::thread worker_;
