@@ -348,7 +348,7 @@ inline nop_awaiter nop() {
 /// 在需要立即提交的场景（如低延迟要求）下可使用。
 inline int submit() {
     auto *ctx = this_io_context();
-    return ctx->meta().flush(ctx->ring());
+    return ctx->meta().flush();
 }
 
 } // namespace lazy

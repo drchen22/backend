@@ -6,7 +6,7 @@ lazy_io_awaiter::lazy_io_awaiter() {
     auto *ring = ctx->ring();
     sqe_ = io_uring_get_sqe(ring);
     if (!sqe_) {
-        ctx->meta().flush(ring);
+        ctx->meta().flush();
         sqe_ = io_uring_get_sqe(ring);
     }
     ctx_ = ctx;
@@ -16,7 +16,7 @@ void lazy_io_awaiter::await_suspend(std::coroutine_handle<> h) noexcept {
     info_.handel_ = h;
     io_uring_sqe_set_data64(
         sqe_, static_cast<uint64_t>(encode_io_task_info(&info_)));
-    ctx_->meta().notify_sqe_ready(ctx_->ring());
+    ctx_->meta().notify_sqe_ready();
     ctx_->meta().notify_io_inflight();
 }
 
@@ -39,7 +39,6 @@ lazy_link_awaiter::lazy_link_awaiter(
 
 void lazy_link_awaiter::await_suspend(
     std::coroutine_handle<> h) noexcept {
-    auto *ring = ctx_->ring();
     auto chain_size = sqes_.size();
 
     infos_.resize(chain_size);
@@ -55,7 +54,7 @@ void lazy_link_awaiter::await_suspend(
         ctx_->meta().notify_io_inflight();
     }
 
-    ctx_->meta().notify_sqe_ready(ring);
+    ctx_->meta().notify_sqe_ready();
 }
 
 void lazy_link_awaiter::apply_link_flags() {

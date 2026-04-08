@@ -320,7 +320,12 @@ public:
 
             decltype(auto) await_resume() {
                 assert(this->handle_ && "broken_promise");
-                return std::move(this->handle_.promise().result());
+                if constexpr (std::is_void_v<
+                                  decltype(this->handle_.promise().result())>) {
+                    this->handle_.promise().result();
+                } else {
+                    return std::move(this->handle_.promise().result());
+                }
             }
         };
 

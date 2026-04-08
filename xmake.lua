@@ -14,6 +14,11 @@ set_kind("binary")
 add_files("examples/http_server.cpp")
 add_deps("backend")
 
+target("echo_server")
+set_kind("binary")
+add_files("examples/echo_server.cpp")
+add_deps("backend")
+
 target("tests")
 set_kind("binary")
 add_files("tests/**.cpp")

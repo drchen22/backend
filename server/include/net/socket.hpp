@@ -9,7 +9,9 @@
 
 #include <async/lazy_io.hpp>
 #include <cstdint>
+#include <net/inet_address.hpp>
 #include <sys/socket.h>
+#include <unistd.h>
 #include <utility>
 
 namespace net {
@@ -44,6 +46,17 @@ public:
         }
     }
 
+    /// @brief 创建一个 TCP socket（非阻塞）
+    /// @param family 地址族（AF_INET 或 AF_INET6），默认 AF_INET
+    /// @return 新创建的文件描述符，或 -1 表示失败
+    static int create_tcp(int family = AF_INET) noexcept {
+        int fd = ::socket(family, SOCK_STREAM, 0);
+        if (fd < 0) {
+            return -1;
+        }
+        return fd;
+    }
+
     /// @brief 从 socket 接收数据（延迟 IO）
     auto recv(void *buf, std::size_t len, int flags = 0) {
         return lazy::recv(fd_, buf, len, flags);
@@ -70,6 +83,14 @@ public:
     }
 
     /// @brief 发起非阻塞连接（延迟 IO）
+    /// @param addr 目标地址
+    /// @return 0 表示成功，负数错误码
+    auto connect(const inet_address &addr) {
+        return lazy::connect(
+            fd_, addr.sockaddr_ptr(), addr.sockaddr_len());
+    }
+
+    /// @brief 发起非阻塞连接（延迟 IO），使用原始地址
     static auto connect(int fd, const sockaddr *addr, socklen_t addrlen) {
         return lazy::connect(fd, addr, addrlen);
     }

@@ -13,7 +13,7 @@ TEST_CASE("worker_meta: initial state", "[worker_meta]") {
     worker_meta wm;
     REQUIRE(wm.pending_submits() == 0);
     REQUIRE(wm.inflight_count() == 0);
-    REQUIRE(wm.submit_threshold() == 1);
+    REQUIRE(wm.submit_threshold() == config::submission_threshold);
 }
 
 TEST_CASE("worker_meta: threshold configuration", "[worker_meta]") {
@@ -44,54 +44,50 @@ TEST_CASE("worker_meta: notify_io tracking", "[worker_meta]") {
 }
 
 TEST_CASE("worker_meta: flush on threshold", "[worker_meta]") {
-    io_uring ring;
-    io_uring_queue_init(64, &ring, 0);
-
     worker_meta wm(3);
+    wm.init(64);
 
-    io_uring_sqe *sqe1 = io_uring_get_sqe(&ring);
+    io_uring_sqe *sqe1 = io_uring_get_sqe(wm.ring());
     io_uring_prep_nop(sqe1);
     io_uring_sqe_set_data64(sqe1, 0);
-    int r1 = wm.notify_sqe_ready(&ring);
+    int r1 = wm.notify_sqe_ready();
     REQUIRE(r1 == 0);
     REQUIRE(wm.pending_submits() == 1);
 
-    io_uring_sqe *sqe2 = io_uring_get_sqe(&ring);
+    io_uring_sqe *sqe2 = io_uring_get_sqe(wm.ring());
     io_uring_prep_nop(sqe2);
     io_uring_sqe_set_data64(sqe2, 0);
-    int r2 = wm.notify_sqe_ready(&ring);
+    int r2 = wm.notify_sqe_ready();
     REQUIRE(r2 == 0);
     REQUIRE(wm.pending_submits() == 2);
 
-    io_uring_sqe *sqe3 = io_uring_get_sqe(&ring);
+    io_uring_sqe *sqe3 = io_uring_get_sqe(wm.ring());
     io_uring_prep_nop(sqe3);
     io_uring_sqe_set_data64(sqe3, 0);
-    int r3 = wm.notify_sqe_ready(&ring);
+    int r3 = wm.notify_sqe_ready();
     REQUIRE(r3 >= 3);
     REQUIRE(wm.pending_submits() == 0);
 
-    io_uring_cq_advance(&ring, 3);
-    io_uring_queue_exit(&ring);
+    io_uring_cq_advance(wm.ring(), 3);
+    wm.deinit();
 }
 
 TEST_CASE("worker_meta: manual flush", "[worker_meta]") {
-    io_uring ring;
-    io_uring_queue_init(64, &ring, 0);
-
     worker_meta wm(100);
+    wm.init(64);
 
-    io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+    io_uring_sqe *sqe = io_uring_get_sqe(wm.ring());
     io_uring_prep_nop(sqe);
     io_uring_sqe_set_data64(sqe, 0);
-    wm.notify_sqe_ready(&ring);
+    wm.notify_sqe_ready();
     REQUIRE(wm.pending_submits() == 1);
 
-    int ret = wm.flush(&ring);
+    int ret = wm.flush();
     REQUIRE(ret >= 1);
     REQUIRE(wm.pending_submits() == 0);
 
-    io_uring_cq_advance(&ring, 1);
-    io_uring_queue_exit(&ring);
+    io_uring_cq_advance(wm.ring(), 1);
+    wm.deinit();
 }
 
 static Task<void> test_batch_file_io(io_context &ctx) {
@@ -222,5 +218,3 @@ TEST_CASE("batch submission: high threshold still works", "[batch]") {
     ctx.start();
     ctx.join();
 }
-
-
