@@ -62,3 +62,42 @@ void lazy_link_awaiter::apply_link_flags() {
         sqes_[i]->flags |= IOSQE_IO_LINK;
     }
 }
+
+lazy_link_timeout::lazy_link_timeout(
+    lazy_io_awaiter &&io, __kernel_timespec ts, unsigned timeout_flags)
+    : ts_(ts) {
+    io_sqe_ = io.sqe_;
+    ctx_ = io.ctx_;
+    io.sqe_ = nullptr;
+    io.ctx_ = nullptr;
+
+    auto *ring = ctx_->ring();
+    timeout_sqe_ = io_uring_get_sqe(ring);
+    if (!timeout_sqe_) {
+        ctx_->meta().flush();
+        timeout_sqe_ = io_uring_get_sqe(ring);
+    }
+
+    io_sqe_->flags |= IOSQE_IO_LINK;
+
+    io_uring_prep_link_timeout(timeout_sqe_, &ts_, timeout_flags);
+    timeout_sqe_->flags |= IOSQE_CQE_SKIP_SUCCESS;
+}
+
+void lazy_link_timeout::await_suspend(
+    std::coroutine_handle<> h) noexcept {
+    io_info_.handel_ = h;
+    io_info_.result = 0;
+    timeout_info_.handel_ = nullptr;
+    timeout_info_.result = 0;
+
+    io_uring_sqe_set_data64(
+        io_sqe_, static_cast<uint64_t>(encode_link_task_info(&io_info_)));
+    io_uring_sqe_set_data64(
+        timeout_sqe_,
+        static_cast<uint64_t>(encode_link_task_info(&timeout_info_)));
+
+    ctx_->meta().notify_io_inflight();
+    ctx_->meta().notify_io_inflight();
+    ctx_->meta().notify_sqe_ready();
+}

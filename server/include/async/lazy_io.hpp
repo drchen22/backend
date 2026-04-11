@@ -13,6 +13,7 @@
 ///   int fd = co_await lazy::openat(AT_FDCWD, "/tmp/file", O_RDONLY);
 ///   lazy::submit();  // 显式提交所有累积的 SQE
 
+#include <async/config/io_context.hpp>
 #include <async/details/lazy_io_awaiter.hpp>
 #include <async/io_context.hpp>
 #include <chrono>
@@ -228,7 +229,7 @@ struct timeout_awaiter : lazy_io_awaiter {
     }
 };
 
-/// @brief 注册一个超时请求
+/// @brief 注册一个超时请求（原始接口）
 /// @param ts 超时时间（支持相对和绝对时间）
 /// @param count 等待的完成事件数量，0 表示纯超时
 /// @param flags IORING_TIMEOUT_ABS 等标志
@@ -256,25 +257,85 @@ __kernel_timespec to_kernel_timespec(
     return to_kernel_timespec(dur);
 }
 
-/// @brief 注册相对时长超时（steady_clock）
+/// @brief 将 chrono 时长转换为带偏移的 __kernel_timespec
+/// 减去 timeout_bias_nanosecond 以补偿 SQE 提交延迟
+template <class Rep, class Period>
+__kernel_timespec to_kernel_timespec_biased(
+    std::chrono::duration<Rep, Period> dur) {
+    auto biased = dur - std::chrono::nanoseconds(config::timeout_bias_nanosecond);
+    if (biased < std::chrono::duration<Rep, Period>::zero()) {
+        biased = std::chrono::duration<Rep, Period>::zero();
+    }
+    return to_kernel_timespec(biased);
+}
+
+/// @brief 注册相对时长超时（使用 BOOTTIME 时钟）
 /// @param dur 超时时长
 /// @param count 等待的完成事件数量，0 表示纯超时
 /// @return 0 表示超时触发，正数表示在超时前完成的请求数
 template <class Rep, class Period>
 timeout_awaiter timeout(std::chrono::duration<Rep, Period> dur,
-                        unsigned count = 0) {
-    return timeout_awaiter{to_kernel_timespec(dur), count, 0};
+                         unsigned count = 0) {
+    return timeout_awaiter{
+        to_kernel_timespec_biased(dur), count, IORING_TIMEOUT_BOOTTIME};
 }
 
-/// @brief 注册绝对时间点超时（system_clock 或 steady_clock）
+/// @brief 注册绝对时间点超时
+/// steady_clock 使用默认时钟（MONOTONIC），system_clock 使用 REALTIME
 /// @param tp 超时绝对时间点
 /// @param count 等待的完成事件数量，0 表示纯超时
 /// @return 0 表示超时触发，正数表示在超时前完成的请求数
 template <class Clock, class Duration>
 timeout_awaiter timeout(std::chrono::time_point<Clock, Duration> tp,
-                        unsigned count = 0) {
-    return timeout_awaiter{
-        to_kernel_timespec(tp), count, IORING_TIMEOUT_ABS};
+                         unsigned count = 0) {
+    unsigned flags = IORING_TIMEOUT_ABS;
+    if constexpr (std::is_same_v<Clock, std::chrono::system_clock>) {
+        flags |= IORING_TIMEOUT_REALTIME;
+    }
+    return timeout_awaiter{to_kernel_timespec(tp), count, flags};
+}
+
+/// @brief 注册绝对时间点超时（显式接口）
+/// @param tp 超时绝对时间点
+/// @param count 等待的完成事件数量，0 表示纯超时
+/// @return 0 表示超时触发，正数表示在超时前完成的请求数
+template <class Clock, class Duration>
+timeout_awaiter timeout_at(std::chrono::time_point<Clock, Duration> tp,
+                             unsigned count = 0) {
+    unsigned flags = IORING_TIMEOUT_ABS;
+    if constexpr (std::is_same_v<Clock, std::chrono::system_clock>) {
+        flags |= IORING_TIMEOUT_REALTIME;
+    }
+    return timeout_awaiter{to_kernel_timespec(tp), count, flags};
+}
+
+/// @brief 将 IO 操作与相对超时链接
+/// IO 操作先执行，超时作为链接操作跟随：
+/// - IO 在超时前完成 → 返回 IO 结果
+/// - 超时先触发 → IO 被取消，返回 -ECANCELED
+/// @param io IO 操作 awaiter
+/// @param dur 超时时长
+/// @return IO 结果，或 -ECANCELED
+template <class Rep, class Period>
+lazy_link_timeout timeout(lazy_io_awaiter &&io,
+                           std::chrono::duration<Rep, Period> dur) {
+    return lazy_link_timeout{
+        std::move(io), to_kernel_timespec_biased(dur),
+        IORING_TIMEOUT_BOOTTIME};
+}
+
+/// @brief 将 IO 操作与绝对超时链接
+/// @param io IO 操作 awaiter
+/// @param tp 超时绝对时间点
+/// @return IO 结果，或 -ECANCELED
+template <class Clock, class Duration>
+lazy_link_timeout timeout_at(lazy_io_awaiter &&io,
+                              std::chrono::time_point<Clock, Duration> tp) {
+    unsigned flags = IORING_TIMEOUT_ABS;
+    if constexpr (std::is_same_v<Clock, std::chrono::system_clock>) {
+        flags |= IORING_TIMEOUT_REALTIME;
+    }
+    return lazy_link_timeout{std::move(io), to_kernel_timespec(tp), flags};
 }
 
 struct timeout_remove_awaiter : lazy_io_awaiter {
@@ -289,6 +350,27 @@ struct timeout_remove_awaiter : lazy_io_awaiter {
 inline timeout_remove_awaiter
 timeout_remove(std::uint64_t user_data, unsigned flags = 0) {
     return timeout_remove_awaiter{user_data, flags};
+}
+
+struct timeout_update_awaiter : lazy_io_awaiter {
+    __kernel_timespec ts_;
+
+    timeout_update_awaiter(__kernel_timespec ts, std::uint64_t user_data,
+                            unsigned flags)
+        : ts_(ts) {
+        io_uring_prep_timeout_update(sqe(), &ts_, user_data, flags);
+    }
+};
+
+/// @brief 更新一个已注册的超时请求的过期时间
+/// @param dur 新的超时时长
+/// @param user_data 要更新的超时 SQE 的 user_data
+/// @param flags 标志位
+inline timeout_update_awaiter
+timeout_update(std::chrono::nanoseconds dur, std::uint64_t user_data,
+               unsigned flags = 0) {
+    return timeout_update_awaiter{
+        to_kernel_timespec_biased(dur), user_data, flags};
 }
 
 // ============================================================

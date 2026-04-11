@@ -37,6 +37,7 @@ private:
     task_info info_{};
 
     friend class lazy_link_awaiter;
+    friend class lazy_link_timeout;
 };
 
 /// @brief 延迟链式 IO awaiter
@@ -82,3 +83,33 @@ inline lazy_link_awaiter operator&&(lazy_link_awaiter &&a,
                                     lazy_io_awaiter &&b) {
     return lazy_link_awaiter(std::move(a), std::move(b));
 }
+
+/// @brief 延迟链接超时 awaiter
+/// 将 IO 操作与 LINK_TIMEOUT 原子地链接在一起。
+/// IO 操作先执行，超时作为链接操作跟随：
+/// - 如果 IO 在超时前完成，超时自动取消，返回 IO 结果
+/// - 如果超时先触发，IO 被取消，返回 -ECANCELED
+class lazy_link_timeout {
+public:
+    lazy_link_timeout(lazy_io_awaiter &&io, __kernel_timespec ts,
+                      unsigned timeout_flags);
+
+    lazy_link_timeout(const lazy_link_timeout &) = delete;
+    lazy_link_timeout &operator=(const lazy_link_timeout &) = delete;
+    lazy_link_timeout(lazy_link_timeout &&) = default;
+    lazy_link_timeout &operator=(lazy_link_timeout &&) = delete;
+
+    bool await_ready() const noexcept { return false; }
+
+    void await_suspend(std::coroutine_handle<> h) noexcept;
+
+    int await_resume() noexcept { return io_info_.result; }
+
+private:
+    io_uring_sqe *io_sqe_;
+    io_uring_sqe *timeout_sqe_;
+    io_context *ctx_;
+    __kernel_timespec ts_;
+    link_task_info io_info_{};
+    link_task_info timeout_info_{};
+};
