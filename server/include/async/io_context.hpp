@@ -8,19 +8,25 @@
 #include <async/task.hpp>
 #include <cassert>
 #include <coroutine>
-#include <cstring>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
+#include <poll.h>
 #include <print>
 #include <queue>
+#include <sys/eventfd.h>
 #include <thread>
+#include <unistd.h>
 #include <utility>
 
 class io_context;
 
 inline io_context *this_io_context() noexcept;
 
-enum class safety { safe, unsafe };
+enum class safety {
+    safe,
+    unsafe
+};
 
 class io_context {
 public:
@@ -38,8 +44,8 @@ public:
         join();
     }
 
-    io_context(const io_context &) = delete;
-    io_context &operator=(const io_context &) = delete;
+    io_context(io_context const &) = delete;
+    io_context &operator=(io_context const &) = delete;
 
     void start() {
         worker_ = std::thread([this] {
@@ -68,7 +74,22 @@ public:
     void stop() {
         will_stop_.store(true, std::memory_order_release);
         if (ring_ready_.load(std::memory_order_acquire)) {
-            meta_.notify_external();
+            notify();
+        }
+    }
+
+    void co_spawn_auto(std::coroutine_handle<> h) {
+        if (detail::this_thread.ctx == this) {
+            meta_.forward_task(h);
+        } else {
+            {
+                std::scoped_lock lock(spawn_mtx_);
+                spawn_queue_.push(h);
+            }
+            has_pending_spawn_.store(true, std::memory_order_release);
+            if (ring_ready_.load(std::memory_order_acquire)) {
+                notify();
+            }
         }
     }
 
@@ -83,38 +104,63 @@ public:
 
     struct yield_awaitable {
         io_context &ctx;
-        bool await_ready() noexcept { return false; }
+
+        bool await_ready() noexcept {
+            return false;
+        }
+
         void await_suspend(std::coroutine_handle<> h) noexcept {
             ctx.meta_.forward_task(h);
         }
+
         void await_resume() noexcept {}
     };
 
-    yield_awaitable yield() noexcept { return yield_awaitable{*this}; }
+    yield_awaitable yield() noexcept {
+        return yield_awaitable{*this};
+    }
 
-    io_uring *ring() noexcept { return meta_.ring(); }
+    io_uring *ring() noexcept {
+        return meta_.ring();
+    }
 
-    worker_meta &meta() noexcept { return meta_; }
+    worker_meta &meta() noexcept {
+        return meta_;
+    }
 
-    [[nodiscard]] std::size_t id() const noexcept { return id_; }
+    [[nodiscard]] std::size_t id() const noexcept {
+        return id_;
+    }
 
 private:
     friend io_context *this_io_context() noexcept;
 
     void init() {
-        unsigned entries =
-            static_cast<unsigned>(config::io_uring_entries);
+        unsigned entries = static_cast<unsigned>(config::io_uring_entries);
         int ret = meta_.init(entries);
         if (ret < 0) {
-            fprintf(stderr, "FATAL: io_uring_queue_init(%u) failed: %s (ret=%d)\n",
+            fprintf(stderr,
+                    "FATAL: io_uring_queue_init(%u) failed: %s (ret=%d)\n",
                     entries, strerror(-ret), ret);
             std::abort();
         }
         meta_.set_ctx_id(id_);
         meta_.reset();
+
+        eventfd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        if (eventfd_ < 0) {
+            fprintf(stderr, "FATAL: eventfd() failed: %s\n", strerror(errno));
+            std::abort();
+        }
     }
 
-    void deinit() { meta_.deinit(); }
+    void deinit() {
+        meta_.deinit();
+        if (eventfd_ >= 0) {
+            ::close(eventfd_);
+            eventfd_ = -1;
+        }
+    }
 
     void co_spawn_safe(Task<void> t) {
         work_.fetch_add(1, std::memory_order_relaxed);
@@ -126,7 +172,7 @@ private:
             spawn_queue_.push(h);
         }
         if (ring_ready_.load(std::memory_order_acquire)) {
-            meta_.notify_external();
+            notify();
         }
     }
 
@@ -144,16 +190,19 @@ private:
             meta_.forward_task(spawn_queue_.front());
             spawn_queue_.pop();
         }
+        has_pending_spawn_.store(false, std::memory_order_release);
     }
 
-    bool can_stop() const noexcept {
-        return will_stop_.load(std::memory_order_acquire)
-               && work_.load(std::memory_order_acquire) == 0;
+    bool can_stop() noexcept {
+        return will_stop_.load(std::memory_order_acquire) &&
+               work_.load(std::memory_order_acquire) == 0 &&
+               !meta_.has_task_ready() &&
+               !has_pending_spawn_.load(std::memory_order_acquire);
     }
 
     void work_done() {
         if (work_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            meta_.notify_external();
+            notify();
         }
     }
 
@@ -196,8 +245,7 @@ private:
         }
 
         if (is_link_task(static_cast<uintptr_t>(data))) {
-            auto *info =
-                decode_link_task_info(static_cast<uintptr_t>(data));
+            auto *info = decode_link_task_info(static_cast<uintptr_t>(data));
             info->result = cqe->res;
             meta_.notify_io_completed();
             auto h = info->handel_;
@@ -205,8 +253,7 @@ private:
                 meta_.forward_task(h);
             }
         } else if (is_io_task(static_cast<uintptr_t>(data))) {
-            auto *info =
-                decode_io_task_info(static_cast<uintptr_t>(data));
+            auto *info = decode_io_task_info(static_cast<uintptr_t>(data));
             info->result = cqe->res;
             meta_.notify_io_completed();
             meta_.forward_task(info->handel_);
@@ -218,7 +265,14 @@ private:
         }
     }
 
+    void drain_eventfd() noexcept {
+        uint64_t val;
+        while (::read(eventfd_, &val, sizeof(val)) > 0) {}
+    }
+
     void do_worker_part() {
+        drain_spawn_queue();
+
         std::size_t budget = config::swap_capacity;
         while (meta_.has_task_ready() && budget-- > 0) {
             auto h = meta_.schedule();
@@ -227,32 +281,41 @@ private:
             }
         }
 
-        if (!meta_.has_task_ready()) {
-            drain_spawn_queue();
-            if (!meta_.has_task_ready()) {
-                meta_.submit_and_wait(1);
-            }
+        drain_spawn_queue();
+
+        if (!meta_.has_task_ready() &&
+            !has_pending_spawn_.load(std::memory_order_acquire)) {
+            meta_.arm_eventfd(eventfd_);
+            meta_.submit_and_wait(1);
+            drain_eventfd();
         }
     }
 
     static Task<void> runner(Task<void> t, io_context *ctx) {
         try {
             co_await t;
-        } catch (...) {
-        }
+        } catch (...) {}
         ctx->work_done();
         co_return;
     }
 
 private:
+    void notify() noexcept {
+        uint64_t val = 1;
+        ::write(eventfd_, &val, sizeof(val));
+    }
+
     worker_meta meta_;
     std::size_t id_{0};
     alignas(config::cache_line_size) std::atomic<bool> will_stop_{false};
     alignas(config::cache_line_size) std::atomic<bool> ring_ready_{false};
     alignas(config::cache_line_size) std::atomic<std::size_t> work_{0};
+    alignas(config::cache_line_size) std::atomic<bool> has_pending_spawn_{
+        false};
     std::thread worker_;
     std::mutex spawn_mtx_;
     std::queue<std::coroutine_handle<>> spawn_queue_;
+    int eventfd_{-1};
 };
 
 inline io_context *this_io_context() noexcept {

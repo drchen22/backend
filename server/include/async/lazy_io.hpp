@@ -15,6 +15,7 @@
 
 #include <async/config/io_context.hpp>
 #include <async/details/lazy_io_awaiter.hpp>
+#include <async/details/resume_on_awaiter.hpp>
 #include <async/io_context.hpp>
 #include <chrono>
 #include <cstdint>
@@ -421,6 +422,14 @@ struct nop_awaiter : lazy_io_awaiter {
 /// @brief 提交一个 nop 操作（可用于测试或唤醒）
 inline nop_awaiter nop() {
     return nop_awaiter{};
+}
+
+/// @brief 将当前协程迁移到目标 io_context 上执行
+/// @param resume_context 目标 io_context 引用
+/// @return awaiter 对象，通过 co_await 调用
+inline detail::lazy_resume_on
+resume_on(io_context &resume_context) noexcept {
+    return detail::lazy_resume_on{resume_context};
 }
 
 /// @brief 显式提交所有累积的 SQE 到内核

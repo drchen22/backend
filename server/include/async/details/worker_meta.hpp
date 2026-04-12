@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <liburing.h>
+#include <poll.h>
 
 class io_context;
 
@@ -18,8 +19,8 @@ public:
         std::size_t submit_threshold = config::submission_threshold) noexcept
         : submit_threshold_(submit_threshold) {}
 
-    worker_meta(const worker_meta &) = delete;
-    worker_meta &operator=(const worker_meta &) = delete;
+    worker_meta(worker_meta const &) = delete;
+    worker_meta &operator=(worker_meta const &) = delete;
 
     // ================================================================
     // Region 1: Ring 共享区 — io_uring 实例数据
@@ -29,19 +30,29 @@ public:
         return io_uring_queue_init(entries, &ring_, 0);
     }
 
-    void deinit() noexcept { io_uring_queue_exit(&ring_); }
+    void deinit() noexcept {
+        io_uring_queue_exit(&ring_);
+    }
 
-    io_uring *ring() noexcept { return &ring_; }
+    io_uring *ring() noexcept {
+        return &ring_;
+    }
 
     // ================================================================
     // Region 2: 只读共享区 — 不可变的上下文元数据
     // ================================================================
 
-    [[nodiscard]] int ring_fd() const noexcept { return ring_.ring_fd; }
+    [[nodiscard]] int ring_fd() const noexcept {
+        return ring_.ring_fd;
+    }
 
-    [[nodiscard]] std::size_t ctx_id() const noexcept { return ctx_id_; }
+    [[nodiscard]] std::size_t ctx_id() const noexcept {
+        return ctx_id_;
+    }
 
-    void set_ctx_id(std::size_t id) noexcept { ctx_id_ = id; }
+    void set_ctx_id(std::size_t id) noexcept {
+        ctx_id_ = id;
+    }
 
     [[nodiscard]] std::size_t submit_threshold() const noexcept {
         return submit_threshold_;
@@ -55,12 +66,11 @@ public:
     // Region 3: 可读写共享区 — 跨线程协调
     // ================================================================
 
-    void notify_external() noexcept {
+    void arm_eventfd(int efd) noexcept {
         auto *sqe = io_uring_get_sqe(&ring_);
         if (sqe) {
-            io_uring_prep_nop(sqe);
+            io_uring_prep_poll_add(sqe, efd, POLLIN);
             io_uring_sqe_set_data(sqe, nullptr);
-            io_uring_submit(&ring_);
         }
     }
 
@@ -85,7 +95,9 @@ public:
         requests_to_reap_.fetch_sub(1, std::memory_order_acq_rel);
     }
 
-    int flush() noexcept { return do_flush(); }
+    int flush() noexcept {
+        return do_flush();
+    }
 
     int submit_and_wait(unsigned min_complete) noexcept {
         requests_to_submit_.store(0, std::memory_order_release);
@@ -145,10 +157,9 @@ private:
     std::size_t submit_threshold_;
 
     // Region 4: 线程本地区
-    alignas(config::cache_line_size) std::atomic<std::size_t>
-        requests_to_submit_{0};
+    alignas(config::cache_line_size)
+        std::atomic<std::size_t> requests_to_submit_{0};
     std::atomic<std::size_t> requests_to_reap_{0};
     spsc_cursor<cur_t, config::swap_capacity, false> reap_cur_;
-    std::coroutine_handle<>
-        reap_swap_[config::swap_capacity];
+    std::coroutine_handle<> reap_swap_[config::swap_capacity];
 };
